@@ -91,7 +91,7 @@ fn starts_with_any(s: &str, tries: &Vec<String>) -> bool {
     false
 }
 
-fn collect_files_for_config(config: &AppConfig) {
+fn collect_files_for_config(config: &AppConfig) -> String {
     let cont = git_ls_files(&config.input_root);
     let files = cont.lines();
 
@@ -117,6 +117,7 @@ fn collect_files_for_config(config: &AppConfig) {
 
         hasher.feed_file(&f, &ll);
     }
+    hasher.result()
 }
 
 fn path_normalize(path_rel: &str) -> String {
@@ -149,6 +150,20 @@ fn zip_output(root_path: &str, paths: &Vec<String>, zip_file: &str) {
     cmd.status().expect("Running 7za failed");
 }
 
+fn unzip_to_output(root_path: &str, zip_file: &str) {
+    Command::new("c:/bin/7za.exe")
+        .args(&["-y", "x", zip_file])
+        .current_dir(&root_path)
+        .status().expect("Running unzip failed");
+}
+
+fn discover_archive(config: &AppConfig, checksum: &str) -> (bool, String) {
+    let archive = env::var("HASHIBUILD_ARCHIVE").unwrap_or_else(|_|"c:/t/hbcache".into());
+    let zipname = format!("{}/{}_{}.zip", archive, config.name, checksum);
+    (fs::metadata(&zipname).is_ok(), zipname)
+}
+
+
 
 #[test]
 fn test_git() {
@@ -169,7 +184,6 @@ fn test_get_checksums() {
 fn test_path() {
     let mut own = "c:/temp/a".to_owned();
     let s = path_join(&mut own, "../c");
-    dbg!(&s);
     assert!(s == "c:/temp/c")
 }
 #[test]
@@ -177,13 +191,6 @@ fn test_config() {
     let tc = testconfig();
     dbg!(&tc);
     collect_files_for_config(&tc);
-}
-
-fn discover_archive(config: &AppConfig, checksum: &str) -> (bool, String) {
-    let archive = env::var("HASHIBUILD_CACHE").unwrap_or_else(|_|"c:/t/hbcache".into());
-    let zipname = format!("{}/{}_{}.zip", archive, config.name, checksum);
-    (fs::metadata(&zipname).is_ok(), zipname)
-
 }
 
 #[test]
@@ -194,9 +201,37 @@ fn test_discover_archive() {
     assert_eq!(_path, "c:/t/hbcache/hashibuildtest_crc.zip")
 }
 
+fn handle_project(config: &AppConfig) {
+    // count the hash
+
+    let checksum = collect_files_for_config(&config);
+    let (found, arc) = discover_archive(&config, &checksum);
+    if !found {
+        run_in_shell(&config.build_cmd, &config.input_root);
+        zip_output(&config.output_root, &config.output_dirs, &arc);
+    } else {
+        unzip_to_output(&config.output_root, &arc);
+    }
+
+
+
+    // check the archive
+    // build if needed
+    // zip it up
+
+    // or just unzip
+
+}
+
 #[test]
 fn run_build_command() {
     let tc= testconfig();
     run_in_shell(&tc.build_cmd, &tc.input_root);
     zip_output(&tc.output_root, &tc.output_dirs, "c:/t/test.zip")
+}
+
+#[test]
+fn handle_full_build() {
+    let tc= testconfig();
+    handle_project(&tc);
 }
