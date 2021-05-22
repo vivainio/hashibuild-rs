@@ -1,0 +1,9 @@
+{
+    "name": "hashibuildtest",
+    "inputRoot": "./src/",
+    "outputRoot": "./",
+    "outputDirs": ["out", "elsewhere/singlefile.txt"],
+    "buildCmd": ".\\buildsomething.cmd [BUILDPARAM]",
+    "include": ["subdir/", "buildsomething.cmd"],
+    "exclude": ["subdir/ignored.txt"]
+}
