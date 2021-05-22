@@ -5,6 +5,7 @@ use sha2::{Sha256, Digest};
 use std::io::Write;
 use std::path::{Path};
 use path_clean::clean;
+use std::{env, fs};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all="camelCase")]
@@ -25,7 +26,6 @@ fn testconfig() -> AppConfig {
 
 }
 fn main() {
-
     let ac = testconfig();
     let as_str = serde_json::to_string(&ac).unwrap();
     dbg!(&as_str);
@@ -74,10 +74,11 @@ fn parse_config(path: &str) -> AppConfig {
 
     // fixup paths to be absolute
 
-    let root_path = &Path::new(path).parent().unwrap();
 
-    config.input_root = root_path.join(config.input_root).canonicalize().unwrap().to_string_lossy().into();
-    config.output_root = root_path.join(config.output_root).canonicalize().unwrap().to_string_lossy().into();
+    let root_path = path_normalize(&path_join(path, ".."));
+
+    config.input_root = path_join(&root_path, &config.input_root);
+    config.output_root = path_join(&root_path, &config.output_root);
     config
 }
 
@@ -114,17 +115,38 @@ fn collect_files_for_config(config: &AppConfig) {
             continue;
         }
 
-
         hasher.feed_file(&f, &ll);
     }
 }
 
-fn path_normalize(path: &str) -> String {
+fn path_normalize(path_rel: &str) -> String {
+    let canon = Path::new(path_rel).canonicalize().unwrap();
+    let path = canon.to_string_lossy();
+
     clean(&path.replace("\\\\?\\", "").replace("\\", "/"))
 }
 
-fn path_join(a: &mut str, b: &str) -> String {
+fn path_join(a: &str, b: &str) -> String {
     clean(&format!("{}/{}", &a,&b))
+}
+
+fn run_in_shell(cmd: &str, cwd: &str) {
+    let _exit = Command::new("cmd.exe")
+        .args(["/C", cmd])
+        .current_dir(cwd)
+        .status()
+        .expect("Shell command failed");
+}
+
+fn zip_output(root_path: &str, paths: &Vec<String>, zip_file: &str) {
+    let mut cmd =
+        Command::new("c:/bin/7za.exe");
+    cmd.args(&["a", "-y", "-r", zip_file]);
+    for p in paths {
+        cmd.arg(&p);
+    }
+    cmd.current_dir(root_path);
+    cmd.status().expect("Running 7za failed");
 }
 
 
@@ -157,3 +179,24 @@ fn test_config() {
     collect_files_for_config(&tc);
 }
 
+fn discover_archive(config: &AppConfig, checksum: &str) -> (bool, String) {
+    let archive = env::var("HASHIBUILD_CACHE").unwrap_or_else(|_|"c:/t/hbcache".into());
+    let zipname = format!("{}/{}_{}.zip", archive, config.name, checksum);
+    (fs::metadata(&zipname).is_ok(), zipname)
+
+}
+
+#[test]
+fn test_discover_archive() {
+    let tc= testconfig();
+    let (_found, _path) = discover_archive(&tc, "crc");
+    assert_eq!(_found, false);
+    assert_eq!(_path, "c:/t/hbcache/hashibuildtest_crc.zip")
+}
+
+#[test]
+fn run_build_command() {
+    let tc= testconfig();
+    run_in_shell(&tc.build_cmd, &tc.input_root);
+    zip_output(&tc.output_root, &tc.output_dirs, "c:/t/test.zip")
+}
