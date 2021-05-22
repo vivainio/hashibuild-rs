@@ -21,6 +21,8 @@ struct AppConfig {
 
 }
 
+
+#[cfg(test)]
 fn testconfig() -> AppConfig {
     parse_config("test/testprj.json")
     //serde_json::from_str( )
@@ -46,15 +48,8 @@ fn main() {
         let val = matches.opt_str("c").unwrap();
         let ac = parse_config(&val);
         handle_project(&ac);
+        return;
     }
-
-
-    let ac = testconfig();
-    let as_str = serde_json::to_string(&ac).unwrap();
-    dbg!(&as_str);
-    let parsed2: AppConfig = serde_json::from_str(&as_str).unwrap();
-    dbg!(parsed2);
-    //println!("Hello, world!");
 }
 
 fn git_ls_files(path: &str) -> String {
@@ -86,7 +81,9 @@ impl PrjHasher {
 
     fn result(self) -> String {
         let fin = &self.sha.finalize()[..];
-        base64::encode(fin)
+        base32::encode(base32::Alphabet::RFC4648 {
+            padding: false
+        }, fin)
     }
 }
 
@@ -126,8 +123,6 @@ fn collect_files_for_config(config: &AppConfig) -> String {
     for f in files {
         let abs = root.join(&f);
         let ll = path_normalize(&abs.to_string_lossy());
-        dbg!(&ll);
-
 
         if starts_with_any(f, &config.exclude) {
             println!("Skipping exclude {}",&f);
