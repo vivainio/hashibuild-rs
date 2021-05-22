@@ -4,6 +4,7 @@ use std::fs::File;
 use sha2::{Sha256, Digest};
 use std::io::Write;
 use std::path::{Path};
+use path_clean::clean;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all="camelCase")]
@@ -73,7 +74,7 @@ fn parse_config(path: &str) -> AppConfig {
 
     // fixup paths to be absolute
 
-    let root_path = Path::new(path).parent().unwrap();
+    let root_path = &Path::new(path).parent().unwrap();
 
     config.input_root = root_path.join(config.input_root).canonicalize().unwrap().to_string_lossy().into();
     config.output_root = root_path.join(config.output_root).canonicalize().unwrap().to_string_lossy().into();
@@ -100,7 +101,7 @@ fn collect_files_for_config(config: &AppConfig) {
     let have_includes = config.include.len() > 0;
     for f in files {
         let abs = root.join(&f);
-        let ll = normalize_path(&abs.to_string_lossy());
+        let ll = path_normalize(&abs.to_string_lossy());
         dbg!(&ll);
 
 
@@ -118,10 +119,14 @@ fn collect_files_for_config(config: &AppConfig) {
     }
 }
 
-fn normalize_path(path: &str) -> String
-{
-    path.replace("\\\\?\\", "").replace("\\", "/")
+fn path_normalize(path: &str) -> String {
+    clean(&path.replace("\\\\?\\", "").replace("\\", "/"))
 }
+
+fn path_join(a: &mut str, b: &str) -> String {
+    clean(&format!("{}/{}", &a,&b))
+}
+
 
 #[test]
 fn test_git() {
@@ -139,10 +144,16 @@ fn test_get_checksums() {
 }
 
 #[test]
+fn test_path() {
+    let mut own = "c:/temp/a".to_owned();
+    let s = path_join(&mut own, "../c");
+    dbg!(&s);
+    assert!(s == "c:/temp/c")
+}
+#[test]
 fn test_config() {
     let tc = testconfig();
     dbg!(&tc);
     collect_files_for_config(&tc);
-
 }
 
