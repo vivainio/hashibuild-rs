@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path};
 use path_clean::clean;
 use std::{env, fs};
+use getopts::Options;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all="camelCase")]
@@ -25,7 +26,29 @@ fn testconfig() -> AppConfig {
     //serde_json::from_str( )
 
 }
+
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+
+    let mut opts = Options::new();
+    opts.optopt("c", "config", "Project file (json) to use", "PROJECT");
+    opts.optflag("h", "help", "Show help");
+
+    let matches = opts.parse(&args[1..]).unwrap();
+    if matches.opt_present("h") {
+        let brief = opts.usage(&program);
+        println!("{}", &brief);
+        return;
+    }
+
+    if matches.opt_present("c") {
+        let val = matches.opt_str("c").unwrap();
+        let ac = parse_config(&val);
+        handle_project(&ac);
+    }
+
+
     let ac = testconfig();
     let as_str = serde_json::to_string(&ac).unwrap();
     dbg!(&as_str);
@@ -163,6 +186,28 @@ fn discover_archive(config: &AppConfig, checksum: &str) -> (bool, String) {
     (fs::metadata(&zipname).is_ok(), zipname)
 }
 
+fn handle_project(config: &AppConfig) {
+    // count the hash
+
+    let checksum = collect_files_for_config(&config);
+    let (found, arc) = discover_archive(&config, &checksum);
+    if !found {
+        run_in_shell(&config.build_cmd, &config.input_root);
+        zip_output(&config.output_root, &config.output_dirs, &arc);
+    } else {
+        unzip_to_output(&config.output_root, &arc);
+    }
+
+
+
+    // check the archive
+    // build if needed
+    // zip it up
+
+    // or just unzip
+
+}
+
 
 
 #[test]
@@ -201,27 +246,6 @@ fn test_discover_archive() {
     assert_eq!(_path, "c:/t/hbcache/hashibuildtest_crc.zip")
 }
 
-fn handle_project(config: &AppConfig) {
-    // count the hash
-
-    let checksum = collect_files_for_config(&config);
-    let (found, arc) = discover_archive(&config, &checksum);
-    if !found {
-        run_in_shell(&config.build_cmd, &config.input_root);
-        zip_output(&config.output_root, &config.output_dirs, &arc);
-    } else {
-        unzip_to_output(&config.output_root, &arc);
-    }
-
-
-
-    // check the archive
-    // build if needed
-    // zip it up
-
-    // or just unzip
-
-}
 
 #[test]
 fn run_build_command() {
