@@ -94,8 +94,8 @@ fn parse_config(path: &str) -> AppConfig {
 
     // fixup paths to be absolute
 
-
-    let root_path = path_normalize(&path_join(path, ".."));
+    let parent = Path::new(&path).parent().unwrap().to_string_lossy();
+    let root_path = path_normalize(&parent);
 
     config.input_root = path_join(&root_path, &config.input_root);
     config.output_root = path_join(&root_path, &config.output_root);
