@@ -5,21 +5,19 @@ use sha2::{Sha256, Digest};
 use std::io::Write;
 
 #[derive(Serialize, Deserialize, Debug)]
-
+#[serde(rename_all="camelCase")]
 struct AppConfig {
     name: String,
     exclude: Vec<String>,
-    inputroot: String,
-    build_cmd: String
-    output_dirs: String
+    input_root: String,
+    build_cmd: String,
+    output_dirs: Vec<String>
 }
 
 fn testconfig() -> AppConfig {
-    AppConfig {
-        name: "test".to_string(),
-        exclude: vec!["one".to_string(), "two".to_string()],
-        inputroot: ".".to_string()
-    }
+    parse_config("test/testprj.json")
+    //serde_json::from_str( )
+
 }
 fn main() {
 
@@ -52,7 +50,7 @@ impl PrjHasher {
         }
     }
     fn feed_file(&mut self, path: &str) {
-        self.sha.write(path.as_bytes());
+        self.sha.write(path.as_bytes()).expect("name write failed??");
         let mut file = File::open(&path).expect("File not found");
 
         std::io::copy(&mut file, &mut self.sha).expect("copy failed");
@@ -65,9 +63,12 @@ impl PrjHasher {
 }
 
 
-fn parse_config(path: &string) {
+fn parse_config(path: &str) -> AppConfig {
+    let f = File::open(path).expect("config file not found");
+    serde_json::from_reader(&f).expect("json parsing failed")
 
 }
+
 #[test]
 fn test_git() {
     let files = git_ls_files(".");
@@ -85,5 +86,7 @@ fn test_get_checksums() {
 
 #[test]
 fn test_config() {
-    parse_config("testdata.jsos")
+    let _tc = testconfig();
+    dbg!(_tc);
+
 }
