@@ -35,7 +35,11 @@ fn main() {
 
     let mut opts = Options::new();
     opts.optopt("c", "config", "Project file (json) to use", "PROJECT");
+    opts.optopt("", "salt", "Salt for the hashes", "SALT");
+
     opts.optflag("h", "help", "Show help");
+    opts.optflag("", "param", "Build parameter (e.g. release/debug) to relay to configured buildCmd");
+    opts.optflag("", "build", "Execute build (assumed)");
 
     let matches = opts.parse(&args[1..]).unwrap();
     if matches.opt_present("h") {
@@ -157,9 +161,27 @@ fn run_in_shell(cmd: &str, cwd: &str) {
         .expect("Shell command failed");
 }
 
+fn find_exe(exe_name: &str) -> String {
+    let first = env::args().next().unwrap();
+    let path = Path::new(&first).parent().unwrap();
+    let trie = path.join(exe_name);
+    trie.to_string_lossy().into()
+}
+
+#[test]
+fn test_find_exe() {
+    let _v = find_exe("hashibuild.exe");
+    dbg!(&_v);
+}
+
+
+fn find_7z() -> String {
+    find_exe("7za.exe")
+}
+
 fn zip_output(root_path: &str, paths: &Vec<String>, zip_file: &str) {
     let mut cmd =
-        Command::new("c:/bin/7za.exe");
+        Command::new(find_7z());
     cmd.args(&["a", "-y", "-r", zip_file]);
     for p in paths {
         cmd.arg(&p);
@@ -169,7 +191,7 @@ fn zip_output(root_path: &str, paths: &Vec<String>, zip_file: &str) {
 }
 
 fn unzip_to_output(root_path: &str, zip_file: &str) {
-    Command::new("c:/bin/7za.exe")
+    Command::new(find_7z())
         .args(&["-y", "x", zip_file])
         .current_dir(&root_path)
         .status().expect("Running unzip failed");
@@ -186,24 +208,18 @@ fn handle_project(config: &AppConfig) {
 
     let checksum = collect_files_for_config(&config);
     let (found, arc) = discover_archive(&config, &checksum);
+    // build if needed
+
     if !found {
         run_in_shell(&config.build_cmd, &config.input_root);
+        // zip it up
+
         zip_output(&config.output_root, &config.output_dirs, &arc);
     } else {
+        // or just unzip
         unzip_to_output(&config.output_root, &arc);
     }
-
-
-
-    // check the archive
-    // build if needed
-    // zip it up
-
-    // or just unzip
-
 }
-
-
 
 #[test]
 fn test_git() {

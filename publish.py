@@ -1,6 +1,5 @@
-from __future__ import print_function
-
 import os,shutil
+
 def c(s):
     print(">",s)
     err = os.system(s)
@@ -13,7 +12,9 @@ def nuke(pth):
 prjname = "hashibuild"
 nuke("deploy")
 deploy_target = r"deploy\%s" % prjname
-c("go build -o %s/%s.exe" % (deploy_target, prjname))
+c("cargo build --release --target-dir %s" % deploy_target)
+# shutil.copy("target/release/hashibuild.exe", deploy_target + "/hashibuild.exe")
 c(r"xcopy deploy_extra\* %s\\*" % deploy_target)
+
 os.chdir("deploy")
 c("zip -r %s %s" % (prjname, prjname) )
