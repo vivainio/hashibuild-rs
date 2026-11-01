@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "hashibuild"
+description = "Content hash for a git source subtree plus its lock files, with hash-keyed build caching"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+readme = "README.md"
+authors = [{ name = "Ville Vainio", email = "vivainio@gmail.com" }]
+keywords = ["hash", "build", "cache", "git", "monorepo"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Build Tools",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/vivainio/hashibuild-rs"
+Issues = "https://github.com/vivainio/hashibuild-rs/issues"
+
+[tool.maturin]
+bindings = "bin"
