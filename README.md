@@ -40,11 +40,21 @@ runs `buildCmd`, zips the output dirs and runs the uploader.
 }
 ```
 
-| Variable | Meaning |
-|---|---|
-| `HASHIBUILD_ARCHIVE` | local archive dir (or `--archive`) |
-| `HASHIBUILD_FETCHER` | command run on a local miss, e.g. `aws s3 cp s3://bucket/[ZIP] [DEST]` |
-| `HASHIBUILD_UPLOADER` | command run after a build, e.g. `aws s3 cp [ZIP] s3://bucket/` |
+A config file is optional; everything can be given as flags:
+
+```
+hashibuild services/api --build --name api --archive ~/.cache/hb \
+  --build-cmd "npm run build" --output-dir dist --exclude tests/
+```
+
+| Flag | Env var | Meaning |
+|---|---|---|
+| `--archive DIR` | `HASHIBUILD_ARCHIVE` | local archive dir |
+| `--fetcher CMD` | `HASHIBUILD_FETCHER` | run on a local miss, e.g. `aws s3 cp s3://bucket/[ZIP] [DEST]` |
+| `--uploader CMD` | `HASHIBUILD_UPLOADER` | run after a build, e.g. `aws s3 cp [ZIP] s3://bucket/` |
+| `--name`, `--output-root`, `--build-cmd`, `--output-dir` | | archive name prefix (default: component dir name), output base dir, build command, output dirs |
+
+Flags take precedence over env vars and config values.
 
 `--vacuum` (alone or before `--build`) deletes archive zips older than `--max-age-days` (default 3), then
 keeps only the newest ones within `--max-size-mb` (default 500). It only touches `*.zip` in the archive dir.

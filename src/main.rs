@@ -59,6 +59,44 @@ struct Config {
     build_cmd: Option<String>,
 }
 
+/// Returns (executable, sha256 hex of content), or None for tracked-but-deleted/non-regular files.
+fn hash_file(p: &Path) -> Result<Option<(bool, String)>, String> {
+    let err = |e: std::io::Error| format!("{}: {e}", p.display());
+    let md = match std::fs::symlink_metadata(p) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    if md.file_type().is_symlink() {
+        let t = std::fs::read_link(p).map_err(err)?;
+        return Ok(Some((
+            false,
+            hex::encode(Sha256::digest(t.to_string_lossy().as_bytes())),
+        )));
+    }
+    if !md.is_file() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    let exec = {
+        use std::os::unix::fs::PermissionsExt;
+        md.permissions().mode() & 0o111 != 0
+    };
+    #[cfg(not(unix))]
+    let exec = false;
+    // Stream, so large files are not held in memory.
+    let mut f = std::fs::File::open(p).map_err(err)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf).map_err(err)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(Some((exec, hex::encode(hasher.finalize()))))
+}
+
 fn archive_dir(a: &Args) -> Result<PathBuf, String> {
     a.archive
         .clone()
@@ -103,6 +141,20 @@ struct Args {
     /// HASHIBUILD_UPLOADER. Needs --config (or --build-cmd/--output-dir).
     #[arg(short, long)]
     build: bool,
+    /// Archive name prefix: <name>_<hash>.zip (default: config name, else the component dir name)
+    #[arg(long)]
+    name: Option<String>,
+    /// Directory the output dirs are relative to (default: the component dir)
+    #[arg(long)]
+    output_root: Option<PathBuf>,
+    /// Command to download a missing archive; [ZIP] = archive name, [DEST] = path to write
+    /// (default: $HASHIBUILD_FETCHER)
+    #[arg(long)]
+    fetcher: Option<String>,
+    /// Command run after a successful build; [ZIP] = absolute archive path
+    /// (default: $HASHIBUILD_UPLOADER)
+    #[arg(long)]
+    uploader: Option<String>,
     /// Local archive dir (default: $HASHIBUILD_ARCHIVE)
     #[arg(long)]
     archive: Option<PathBuf>,
@@ -205,7 +257,7 @@ fn run() -> Result<(), String> {
     };
     a.only.extend(cfg.include);
     a.exclude.extend(cfg.exclude);
-    let name = cfg.name.take();
+    let name = a.name.take().or(cfg.name.take());
     let build_cmd = a.build_cmd.take().or(cfg.build_cmd.take());
     let out_root_cfg = cfg.output_root.take();
     let mut out_dirs = cfg.output_dirs.clone();
@@ -268,26 +320,18 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // Read + hash files in parallel; results come back in the sorted order of `files`,
+    // so the final digest does not depend on thread scheduling.
+    use rayon::prelude::*;
+    let items: Vec<(&String, &PathBuf)> = files.iter().collect();
+    let hashed: Vec<Option<(&String, bool, String)>> = items
+        .par_iter()
+        .map(|(label, p)| hash_file(p).map(|r| r.map(|(exec, fd)| (*label, exec, fd))))
+        .collect::<Result<_, String>>()?;
+
     let mut h = Sha256::new();
     h.update(b"hashibuild:v1\0");
-    for (label, p) in &files {
-        // Tracked-but-deleted files are skipped.
-        let mut exec = false;
-        let content = match std::fs::symlink_metadata(p) {
-            Ok(m) if m.file_type().is_symlink() => std::fs::read_link(p)
-                .map(|t| t.to_string_lossy().into_owned().into_bytes())
-                .map_err(|e| format!("{}: {e}", p.display()))?,
-            Ok(m) if m.is_file() => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    exec = m.permissions().mode() & 0o111 != 0;
-                }
-                std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?
-            }
-            _ => continue,
-        };
-        let fd = hex::encode(Sha256::digest(&content));
+    for (label, exec, fd) in hashed.into_iter().flatten() {
         if a.manifest {
             println!("{label} {fd}{}", if exec { " x" } else { "" });
         } else if a.list {
@@ -323,13 +367,19 @@ fn run() -> Result<(), String> {
         if out_dirs.is_empty() {
             return Err("--build needs outputDir/outputDirs in config or --output-dir".into());
         }
-        let output_root = match out_root_cfg {
-            Some(r) => base
-                .join(r)
-                .canonicalize()
-                .map_err(|e| format!("outputRoot: {e}"))?,
+        // A CLI value is relative to the cwd; a config value to the config file.
+        let output_root = match (a.output_root.take(), out_root_cfg) {
+            (Some(r), _) => Some(r),
+            (None, Some(r)) => Some(base.join(r)),
+            (None, None) => None,
+        };
+        let output_root = match output_root {
+            Some(r) => r.canonicalize().map_err(|e| format!("outputRoot: {e}"))?,
             None => sub.clone(),
         };
+        let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+        let fetcher = a.fetcher.take().or_else(|| env("HASHIBUILD_FETCHER"));
+        let uploader = a.uploader.take().or_else(|| env("HASHIBUILD_UPLOADER"));
         let name = name.unwrap_or_else(|| {
             sub.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -343,12 +393,8 @@ fn run() -> Result<(), String> {
             output_dirs: out_dirs,
             build_cmd: cmd,
             archive,
-            fetcher: std::env::var("HASHIBUILD_FETCHER")
-                .ok()
-                .filter(|s| !s.is_empty()),
-            uploader: std::env::var("HASHIBUILD_UPLOADER")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            fetcher,
+            uploader,
         })?;
         eprintln!(
             "{}",

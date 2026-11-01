@@ -359,4 +359,136 @@ mod build {
         assert!(!o.status.success());
         assert!(String::from_utf8_lossy(&o.stderr).contains("HASHIBUILD_ARCHIVE"));
     }
+
+    #[test]
+    fn everything_can_be_given_on_the_command_line_without_a_config() {
+        let (_d, r) = repo();
+        let arch = r.join("archive");
+        let up = format!("cp [ZIP] {}/up.zip", r.display());
+        let mut c = bin();
+        c.current_dir(&r)
+            .args(["svc", "--build", "--name", "api", "--output-dir", "out"])
+            .args(["--build-cmd", "mkdir -p out && echo hi > out/r.txt"])
+            .args(["--uploader", &up, "--archive"])
+            .arg(&arch);
+        let o = run(&mut c);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let h = String::from_utf8(o.stdout).unwrap().trim().to_string();
+        assert!(arch.join(format!("api_{h}.zip")).is_file());
+        assert!(r.join("up.zip").is_file());
+    }
+
+    #[test]
+    fn output_root_flag_is_relative_to_cwd_and_fetcher_flag_beats_env() {
+        let (_d, r) = repo();
+        let arch = r.join("archive");
+        let mut c = bin();
+        c.current_dir(&r)
+            .args([
+                "svc",
+                "--build",
+                "--output-root",
+                ".",
+                "--output-dir",
+                "svc/out",
+            ])
+            .args([
+                "--build-cmd",
+                "mkdir -p out && echo hi > out/r.txt",
+                "--archive",
+            ])
+            .arg(&arch);
+        assert!(run(&mut c).status.success());
+        // Move the archive aside so the next run has a local miss.
+        let zip = fs::read_dir(&arch).unwrap().next().unwrap().unwrap().path();
+        fs::rename(&zip, r.join("saved.zip")).unwrap();
+        fs::remove_dir_all(r.join("svc/out")).unwrap();
+
+        // The env fetcher fails and the build command fails: only the --fetcher flag can
+        // produce the archive, so success proves the flag won and the archive was restored.
+        let mut c = bin();
+        c.current_dir(&r)
+            .env("HASHIBUILD_FETCHER", "exit 99")
+            .args([
+                "svc",
+                "--build",
+                "--output-root",
+                ".",
+                "--output-dir",
+                "svc/out",
+            ])
+            .args(["--fetcher", &format!("cp {}/saved.zip [DEST]", r.display())])
+            .args(["--build-cmd", "false", "--archive"])
+            .arg(&arch);
+        let o = run(&mut c);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!(r.join("svc/out/r.txt").is_file());
+    }
+
+    #[test]
+    fn concurrent_builds_of_the_same_hash_leave_one_valid_archive() {
+        let (_d, r, arch) = setup();
+        write(
+            &r,
+            "hb.json",
+            r#"{"name":"svc","inputRoot":"svc","outputDir":"out",
+                "buildCmd":"sleep 0.3; mkdir -p out && head -c 200000 /dev/zero > out/big.bin && echo x >> ../builds.log"}"#,
+        );
+        let kids: Vec<_> = (0..6)
+            .map(|_| {
+                bin()
+                    .current_dir(&r)
+                    .args(["-c", "hb.json", "--build", "--archive"])
+                    .arg(&arch)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for mut k in kids {
+            assert!(k.wait().unwrap().success());
+        }
+        let names: Vec<String> = fs::read_dir(&arch)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "leftover temp files: {names:?}");
+        assert!(names[0].ends_with(".zip"));
+
+        // The surviving archive must be intact: restore from it without building.
+        let before = builds(&r);
+        fs::remove_dir_all(r.join("svc/out")).unwrap();
+        let o = build(&r, &arch, &[]);
+        assert!(o.status.success());
+        assert_eq!(builds(&r), before);
+        assert_eq!(
+            fs::metadata(r.join("svc/out/big.bin")).unwrap().len(),
+            200_000
+        );
+    }
+}
+
+#[test]
+fn parallel_hashing_is_deterministic_across_thread_counts() {
+    let (_d, r) = repo();
+    for i in 0..400 {
+        write(
+            &r,
+            &format!("svc/gen/d{}/f{i}.txt", i % 7),
+            &format!("content {i}"),
+        );
+    }
+    git(&r, &["add", "."]);
+    let one = run(bin()
+        .current_dir(&r)
+        .env("RAYON_NUM_THREADS", "1")
+        .arg("svc"));
+    let many = run(bin()
+        .current_dir(&r)
+        .env("RAYON_NUM_THREADS", "8")
+        .arg("svc"));
+    assert!(one.status.success());
+    assert_eq!(one.stdout, many.stdout);
+    assert_eq!(String::from_utf8(one.stdout).unwrap().trim(), hash(&r, &[]));
 }

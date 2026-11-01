@@ -18,6 +18,13 @@ pub struct Plan {
     pub uploader: Option<String>,
 }
 
+/// Per-process temp name next to `to`, so concurrent runs never write the same temp file.
+fn temp_path(to: &Path, ext: &str) -> PathBuf {
+    let mut name = to.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.{ext}", std::process::id()));
+    to.with_file_name(name)
+}
+
 fn shell(cmd: &str, dir: &Path) -> Result<(), String> {
     eprintln!("> {cmd}");
     let mut c = if cfg!(windows) {
@@ -45,7 +52,7 @@ fn shell(cmd: &str, dir: &Path) -> Result<(), String> {
 /// Run the fetch command to download the archive into `to`. Any failure (non-zero exit,
 /// no file produced) is a cache miss. Written to a temp name first, then renamed.
 fn fetch(cmd: &str, zip_name: &str, to: &Path, dir: &Path) -> bool {
-    let tmp = to.with_extension("part");
+    let tmp = temp_path(to, "part");
     let _ = fs::remove_file(&tmp);
     let abs = if tmp.is_absolute() {
         tmp.clone()
@@ -100,7 +107,7 @@ fn add_dir(
 }
 
 fn zip_outputs(plan: &Plan, zip_path: &Path) -> Result<(), String> {
-    let tmp = zip_path.with_extension("tmp");
+    let tmp = temp_path(zip_path, "tmp");
     let f = File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let mut zw = zip::ZipWriter::new(f);
     let opts = zip::write::SimpleFileOptions::default()
@@ -195,19 +202,28 @@ pub fn vacuum(dir: &Path, max_age: Duration, max_bytes: u64) -> Result<(usize, u
     if !dir.is_dir() {
         return Ok((0, 0));
     }
+    let now = SystemTime::now();
     let mut zips = Vec::new();
     for ent in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
         let ent = ent.map_err(|e| e.to_string())?;
         let p = ent.path();
-        if p.extension().is_some_and(|x| x == "zip")
-            && let Ok(md) = ent.metadata()
+        let ext = p
+            .extension()
+            .map(|x| x.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Ok(md) = ent.metadata()
             && md.is_file()
+            && matches!(ext.as_str(), "zip" | "tmp" | "part")
         {
+            // Leftover temp files only count once they are old: a fresh one may be in use.
+            let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            if ext != "zip" && now.duration_since(mtime).is_ok_and(|d| d <= max_age) {
+                continue;
+            }
             zips.push((p, md.len(), md.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
         }
     }
     zips.sort_by_key(|z| std::cmp::Reverse(z.2)); // newest first
-    let now = SystemTime::now();
     let (mut kept, mut removed, mut freed) = (0u64, 0usize, 0u64);
     for (p, len, mtime) in zips {
         let too_old = now.duration_since(mtime).is_ok_and(|d| d > max_age);
@@ -271,5 +287,16 @@ mod tests {
             vacuum(&d.path().join("nope"), Duration::ZERO, 0).unwrap(),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn vacuum_removes_only_stale_temp_files() {
+        let d = tempfile::tempdir().unwrap();
+        zip_with_age(d.path(), "x.zip.123.tmp", 5, 10);
+        zip_with_age(d.path(), "y.zip.456.part", 5, 10);
+        zip_with_age(d.path(), "z.zip.789.tmp", 5, 0);
+        let (n, _) = vacuum(d.path(), Duration::from_secs(3 * 86400), 1 << 20).unwrap();
+        assert_eq!(n, 2);
+        assert!(d.path().join("z.zip.789.tmp").exists());
     }
 }
