@@ -46,6 +46,9 @@ runs `buildCmd`, zips the output dirs and runs the uploader.
 | `HASHIBUILD_FETCHER` | command run on a local miss, e.g. `aws s3 cp s3://bucket/[ZIP] [DEST]` |
 | `HASHIBUILD_UPLOADER` | command run after a build, e.g. `aws s3 cp [ZIP] s3://bucket/` |
 
+`--vacuum` (alone or before `--build`) deletes archive zips older than `--max-age-days` (default 3), then
+keeps only the newest ones within `--max-size-mb` (default 500). It only touches `*.zip` in the archive dir.
+
 ## Release
 
 Publishing a GitHub release tagged `vX.Y.Z` builds binaries and wheels and publishes to PyPI

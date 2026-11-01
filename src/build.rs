@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 pub struct Plan {
     pub name: String,
@@ -186,4 +187,89 @@ pub fn run(plan: &Plan) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+/// Delete archive zips older than `max_age`, then keep only the newest ones that fit within
+/// `max_bytes`. Only `*.zip` files directly in `dir` are touched. Returns (files removed, bytes freed).
+pub fn vacuum(dir: &Path, max_age: Duration, max_bytes: u64) -> Result<(usize, u64), String> {
+    if !dir.is_dir() {
+        return Ok((0, 0));
+    }
+    let mut zips = Vec::new();
+    for ent in fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let ent = ent.map_err(|e| e.to_string())?;
+        let p = ent.path();
+        if p.extension().is_some_and(|x| x == "zip")
+            && let Ok(md) = ent.metadata()
+            && md.is_file()
+        {
+            zips.push((p, md.len(), md.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+        }
+    }
+    zips.sort_by_key(|z| std::cmp::Reverse(z.2)); // newest first
+    let now = SystemTime::now();
+    let (mut kept, mut removed, mut freed) = (0u64, 0usize, 0u64);
+    for (p, len, mtime) in zips {
+        let too_old = now.duration_since(mtime).is_ok_and(|d| d > max_age);
+        if !too_old {
+            kept += len;
+        }
+        if too_old || kept > max_bytes {
+            fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            removed += 1;
+            freed += len;
+        }
+    }
+    Ok((removed, freed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn zip_with_age(dir: &Path, name: &str, bytes: usize, age_days: u64) {
+        let p = dir.join(name);
+        fs::write(&p, vec![0u8; bytes]).unwrap();
+        let t = SystemTime::now() - Duration::from_secs(age_days * 86400);
+        File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
+    #[test]
+    fn vacuum_removes_old_zips_only() {
+        let d = tempfile::tempdir().unwrap();
+        zip_with_age(d.path(), "new.zip", 10, 0);
+        zip_with_age(d.path(), "old.zip", 10, 10);
+        fs::write(d.path().join("notes.txt"), "keep").unwrap();
+        let (n, freed) = vacuum(d.path(), Duration::from_secs(3 * 86400), 1 << 20).unwrap();
+        assert_eq!((n, freed), (1, 10));
+        assert!(d.path().join("new.zip").exists());
+        assert!(!d.path().join("old.zip").exists());
+        assert!(d.path().join("notes.txt").exists());
+    }
+
+    #[test]
+    fn vacuum_keeps_newest_within_size_cap() {
+        let d = tempfile::tempdir().unwrap();
+        zip_with_age(d.path(), "a.zip", 100, 0);
+        zip_with_age(d.path(), "b.zip", 100, 1);
+        zip_with_age(d.path(), "c.zip", 100, 2);
+        let (n, _) = vacuum(d.path(), Duration::from_secs(30 * 86400), 250).unwrap();
+        assert_eq!(n, 1);
+        assert!(d.path().join("a.zip").exists() && d.path().join("b.zip").exists());
+        assert!(!d.path().join("c.zip").exists());
+    }
+
+    #[test]
+    fn vacuum_missing_dir_is_noop() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(
+            vacuum(&d.path().join("nope"), Duration::ZERO, 0).unwrap(),
+            (0, 0)
+        );
+    }
 }

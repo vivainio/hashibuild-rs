@@ -59,6 +59,13 @@ struct Config {
     build_cmd: Option<String>,
 }
 
+fn archive_dir(a: &Args) -> Result<PathBuf, String> {
+    a.archive
+        .clone()
+        .or_else(|| std::env::var_os("HASHIBUILD_ARCHIVE").map(PathBuf::from))
+        .ok_or_else(|| "need --archive or HASHIBUILD_ARCHIVE".to_string())
+}
+
 fn excluded(rel: &str, only: &[String], exclude: &[String]) -> bool {
     let l = rel.to_lowercase();
     let pre = |v: &String| l.starts_with(&v.to_lowercase());
@@ -105,6 +112,15 @@ struct Args {
     /// Output dir relative to output root (repeatable; adds to config outputDir(s))
     #[arg(long)]
     output_dir: Vec<String>,
+    /// Delete old/excess archive zips from the archive dir (alone, or before --build)
+    #[arg(long)]
+    vacuum: bool,
+    /// --vacuum: remove archives older than this many days
+    #[arg(long, default_value_t = 3)]
+    max_age_days: u64,
+    /// --vacuum: keep at most this many MB of the newest archives
+    #[arg(long, default_value_t = 500)]
+    max_size_mb: u64,
     /// Print per-file checksums ("path sha256") and the total
     #[arg(short, long)]
     manifest: bool,
@@ -156,6 +172,22 @@ fn split_nul(b: &[u8]) -> Vec<String> {
 
 fn run() -> Result<(), String> {
     let mut a = Args::parse();
+    if a.vacuum {
+        let dir = archive_dir(&a)?;
+        let (n, bytes) = build::vacuum(
+            &dir,
+            std::time::Duration::from_secs(a.max_age_days * 86400),
+            a.max_size_mb * 1024 * 1024,
+        )?;
+        eprintln!(
+            "vacuum: removed {n} archive(s), {} KB from {}",
+            bytes / 1024,
+            dir.display()
+        );
+        if !a.build && a.path.is_none() && a.config.is_none() {
+            return Ok(());
+        }
+    }
     let mut cfg = Config::default();
     let mut base = PathBuf::from(".");
     if let Some(cp) = &a.config {
@@ -283,11 +315,7 @@ fn run() -> Result<(), String> {
     }
 
     if a.build {
-        let archive = a
-            .archive
-            .clone()
-            .or_else(|| std::env::var_os("HASHIBUILD_ARCHIVE").map(PathBuf::from))
-            .ok_or("--build needs --archive or HASHIBUILD_ARCHIVE")?;
+        let archive = archive_dir(&a)?;
         let mut cmd = build_cmd.ok_or("--build needs buildCmd in config or --build-cmd")?;
         if let Some(bp) = &build_param {
             cmd = cmd.replace("[BUILDPARAM]", bp);
@@ -338,5 +366,27 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::excluded;
+
+    fn v(x: &[&str]) -> Vec<String> {
+        x.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn filters_are_case_insensitive_prefixes() {
+        assert!(!excluded("src/a.rs", &[], &[]));
+        assert!(excluded("Src/Tests/a.rs", &[], &v(&["src/tests"])));
+        assert!(!excluded("src/a.rs", &v(&["SRC"]), &[]));
+        assert!(excluded("docs/a.md", &v(&["src"]), &[]));
+    }
+
+    #[test]
+    fn exclude_wins_over_only() {
+        assert!(excluded("src/tests/a.rs", &v(&["src"]), &v(&["src/tests"])));
     }
 }
